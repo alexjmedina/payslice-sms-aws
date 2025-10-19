@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: PaySlice Twilio SMS Microservice (AWS SAM)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 15
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        SECRETS_ARN: !Ref TwilioSecrets
+        REGION: !Ref AWS::Region
+
+Resources:
+  TwilioSecrets:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: payslice/twilio
+      Description: Twilio + internal bearer token
+      SecretString: '{"TWILIO_ACCOUNT_SID":"","TWILIO_AUTH_TOKEN":"","TWILIO_MSID":"","INTERNAL_BEARER_TOKEN":""}'
+
+  ApprovedDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: approved-dlq
+
+  ApprovedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: approved-queue
+      DelaySeconds: 120
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ApprovedDLQ.Arn
+        maxReceiveCount: 5
+
+  IngestFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: ingest.lambda_handler
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref TwilioSecrets
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ApprovedQueue.QueueName
+      Environment:
+        Variables:
+          APPROVED_QUEUE_URL: !Ref ApprovedQueue
+      Events:
+        SmsApi:
+          Type: HttpApi
+          Properties:
+            Path: /sms
+            Method: POST
+
+  WorkerFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: worker.lambda_handler
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref TwilioSecrets
+        - SQSPollerPolicy:
+            QueueName: !GetAtt ApprovedQueue.QueueName
+      Events:
+        ApprovedSQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ApprovedQueue.Arn
+            BatchSize: 5
+
+  StatusFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: status.lambda_handler
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref TwilioSecrets
+      Events:
+        TwilioStatus:
+          Type: HttpApi
+          Properties:
+            Path: /twilio/status
+            Method: POST
+
+Outputs:
+  SmsEndpoint:
+    Description: Public endpoint to send SMS events
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/sms"
+  StatusEndpoint:
+    Description: Twilio callback URL
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/twilio/status"

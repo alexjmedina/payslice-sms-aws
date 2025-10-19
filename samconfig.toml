@@ -1,0 +1,14 @@
+---
+# ⚙️ samconfig.toml
+```toml
+version = 0.1
+[default.build.parameters]
+use_container = false
+
+[default.deploy.parameters]
+stack_name = "payslice-sms"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM"
+region = "us-east-1"
+confirm_changeset = false
+s3_prefix = "payslice-sms"
