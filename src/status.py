@@ -1,4 +1,3 @@
-import json, os
 
 def lambda_handler(event, context):
     print("Twilio Status:", event.get("body"))
