@@ -1,96 +1,188 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: PaySlice Twilio SMS Microservice (AWS SAM)
+Description: PaySlice Transactional SMS Microservice (AWS-native SAM + Twilio)
 
 Globals:
   Function:
     Runtime: python3.12
-    Timeout: 15
+    Timeout: 30
     MemorySize: 256
-    Tracing: Active
+    Architectures:
+      - x86_64
     Environment:
       Variables:
-        SECRETS_ARN: !Ref TwilioSecrets
-        REGION: !Ref AWS::Region
+        AWS_REGION: !Ref AWS::Region
+        LOG_LEVEL: INFO
+        TWILIO_SECRET_NAME: !Ref TwilioSecretName
+    Tracing: Active
+
+Parameters:
+  StageName:
+    Type: String
+    Default: staging
+    Description: Deployment stage (staging/prod)
+  TwilioSecretName:
+    Type: String
+    Default: payslice/twilio/txn
+    Description: Name of AWS Secrets Manager secret storing Twilio credentials
+  ApprovedDelaySeconds:
+    Type: Number
+    Default: 120
+    Description: Delay (in seconds) for “Approved” SMS messages
+  IdempotencyTableName:
+    Type: String
+    Default: payslice-sms-idempotency
+    Description: DynamoDB table name for idempotency (optional)
 
 Resources:
-  TwilioSecrets:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: payslice/twilio
-      Description: Twilio + internal bearer token
-      SecretString: '{"TWILIO_ACCOUNT_SID":"","TWILIO_AUTH_TOKEN":"","TWILIO_MSID":"","INTERNAL_BEARER_TOKEN":""}'
 
-  ApprovedDLQ:
-    Type: AWS::SQS::Queue
+  ### API Gateway
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
     Properties:
-      QueueName: approved-dlq
+      StageName: !Ref StageName
+      CorsConfiguration:
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [Content-Type, Authorization]
+        AllowOrigins: ['*']
 
+  ### SQS Queue for delayed “Approved” messages
   ApprovedQueue:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: approved-queue
-      DelaySeconds: 120
-      RedrivePolicy:
-        deadLetterTargetArn: !GetAtt ApprovedDLQ.Arn
-        maxReceiveCount: 5
+      VisibilityTimeout: 300
+      DelaySeconds: !Ref ApprovedDelaySeconds
+      MessageRetentionPeriod: 86400
 
-  IngestFn:
+  ### Dead-letter queue for failures
+  DLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  ### Idempotency Table (optional)
+  IdempotencyTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref IdempotencyTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: exp
+        Enabled: true
+
+  ### Lambda - /sms endpoint
+  IngestFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: payslice-sms-ingest
       CodeUri: src/
       Handler: ingest.lambda_handler
-      Policies:
-        - AWSSecretsManagerGetSecretValuePolicy:
-            SecretArn: !Ref TwilioSecrets
-        - SQSSendMessagePolicy:
-            QueueName: !GetAtt ApprovedQueue.QueueName
       Environment:
         Variables:
           APPROVED_QUEUE_URL: !Ref ApprovedQueue
+          APPROVED_DELAY_SECONDS: !Ref ApprovedDelaySeconds
+          IDEMPOTENCY_TABLE: !Ref IdempotencyTableName
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: "*"
+            - Effect: Allow
+              Action: sqs:SendMessage
+              Resource: !GetAtt ApprovedQueue.Arn
+            - Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt IdempotencyTable.Arn
       Events:
-        SmsApi:
+        IngestApi:
           Type: HttpApi
           Properties:
+            ApiId: !Ref HttpApi
             Path: /sms
             Method: POST
 
-  WorkerFn:
+  ### Lambda - Worker for delayed “Approved” messages
+  WorkerFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: payslice-sms-worker
       CodeUri: src/
       Handler: worker.lambda_handler
       Policies:
-        - AWSSecretsManagerGetSecretValuePolicy:
-            SecretArn: !Ref TwilioSecrets
-        - SQSPollerPolicy:
-            QueueName: !GetAtt ApprovedQueue.QueueName
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt ApprovedQueue.Arn
       Events:
-        ApprovedSQSEvent:
+        SQSTrigger:
           Type: SQS
           Properties:
             Queue: !GetAtt ApprovedQueue.Arn
-            BatchSize: 5
+            BatchSize: 10
+            Enabled: true
 
-  StatusFn:
+  ### Lambda - /twilio/status webhook
+  StatusFunction:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: payslice-sms-status
       CodeUri: src/
       Handler: status.lambda_handler
       Policies:
-        - AWSSecretsManagerGetSecretValuePolicy:
-            SecretArn: !Ref TwilioSecrets
+        - AWSLambdaBasicExecutionRole
       Events:
-        TwilioStatus:
+        StatusApi:
           Type: HttpApi
           Properties:
+            ApiId: !Ref HttpApi
             Path: /twilio/status
             Method: POST
 
+  ### Lambda - /healthz and /version endpoints
+  HealthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: payslice-sms-health
+      CodeUri: src/
+      Handler: health.lambda_handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Events:
+        HealthCheck:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /healthz
+            Method: GET
+        VersionCheck:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /version
+            Method: GET
+
 Outputs:
-  SmsEndpoint:
-    Description: Public endpoint to send SMS events
-    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/sms"
-  StatusEndpoint:
-    Description: Twilio callback URL
-    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/twilio/status"
+  ApiBaseUrl:
+    Description: HTTPS base URL for PaySlice SMS API
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/"
+  QueueUrl:
+    Description: URL of the ApprovedQueue
+    Value: !Ref ApprovedQueue
+  IdempotencyTable:
+    Description: DynamoDB table for idempotency (optional)
+    Value: !Ref IdempotencyTableName
