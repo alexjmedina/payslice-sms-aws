@@ -11,7 +11,6 @@ Globals:
       - x86_64
     Environment:
       Variables:
-        AWS_REGION: !Ref AWS::Region
         LOG_LEVEL: INFO
         TWILIO_SECRET_NAME: !Ref TwilioSecretName
     Tracing: Active
