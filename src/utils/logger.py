@@ -1,7 +1,6 @@
-import json, datetime
-def log(event, **kwargs):
-    print(json.dumps({
-        "timestamp": datetime.datetime.utcnow().isoformat(),
-        "event": event,
-        **kwargs
-    }))
+import json, sys, time
+
+def log(event, **fields):
+    rec = {"ts": int(time.time()), "event": event, **fields}
+    print(json.dumps(rec), file=sys.stdout, flush=True)
+
