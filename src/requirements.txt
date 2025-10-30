@@ -1,0 +1,12 @@
+# Core AWS and Twilio dependencies
+boto3==1.35.17
+twilio==9.2.3
+
+# Optional: structured validation & type safety
+pydantic==2.9.2
+
+# Optional: lightweight HTTP client (useful for testing or future webhooks)
+httpx==0.27.0
+
+# SAM CLI local emulation dependencies (safe to include)
+aws-lambda-powertools==2.33.1

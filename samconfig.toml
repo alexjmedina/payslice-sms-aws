@@ -8,15 +8,20 @@ use_container = false
 [default.deploy.parameters]
 stack_name = "payslice-sms-microservice"
 resolve_s3 = true
-s3_prefix = "payslice-sms"
+s3_prefix = "payslice-sms-microservice"
 region = "us-east-1"
-confirm_changeset = false
+confirm_changeset = true
 capabilities = "CAPABILITY_IAM"
 fail_on_empty_changeset = false
 image_repositories = []
+profile = "payslice-iam"
+parameter_overrides = "StageName=\"staging\" TwilioSecretName=\"payslice/twilio/txn\" ApprovedDelaySeconds=\"120\" IdempotencyTableName=\"payslice-sms-idempotency\""
 
 [default.package.parameters]
 resolve_s3 = true
 
 [default.sync.parameters]
 watch = true
+
+[default.global.parameters]
+region = "us-east-1"
