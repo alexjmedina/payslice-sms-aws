@@ -1,0 +1,14 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /sms",
+  "rawPath": "/staging/sms",
+  "headers": {
+    "authorization": "Bearer test-bearer",
+    "content-type": "application/json"
+  },
+  "requestContext": {
+    "http": { "method": "POST", "path": "/staging/sms" }
+  },
+  "body": "{\"event_id\":\"e-123\",\"event\":\"advance_in_transit\",\"user\":{\"phone\":\"+15555550123\"}}",
+  "isBase64Encoded": false
+}
