@@ -2,13 +2,24 @@
 # ⚙️ samconfig.toml
 ```toml
 version = 0.1
+
 [default.build.parameters]
+cached = true
+parallel = true
 use_container = false
 
 [default.deploy.parameters]
-stack_name = "payslice-sms"
+stack_name = "payslice-sms-microservice"
 resolve_s3 = true
-capabilities = "CAPABILITY_IAM"
+s3_prefix = "payslice-sms"
 region = "us-east-1"
 confirm_changeset = false
-s3_prefix = "payslice-sms"
+capabilities = "CAPABILITY_IAM"
+fail_on_empty_changeset = false
+image_repositories = []
+
+[default.package.parameters]
+resolve_s3 = true
+
+[default.sync.parameters]
+watch = true
