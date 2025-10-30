@@ -1,0 +1,13 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /twilio/status",
+  "rawPath": "/staging/twilio/status",
+  "headers": {
+    "content-type": "application/x-www-form-urlencoded"
+  },
+  "requestContext": {
+    "http": { "method": "POST", "path": "/staging/twilio/status" }
+  },
+  "body": "MessageSid=SMabc123&MessageStatus=delivered&To=%2B15555550123&From=%2B18557683178",
+  "isBase64Encoded": false
+}
