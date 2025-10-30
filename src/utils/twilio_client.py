@@ -1,6 +1,6 @@
 from twilio.rest import Client
-from .secrets import get_secrets
+from .secrets import get_twilio_secrets
 
-def get_twilio_client():
-    sec = get_secrets()
-    return Client(sec["TWILIO_ACCOUNT_SID"], sec["TWILIO_AUTH_TOKEN"]), sec
+def build_client():
+    s = get_twilio_secrets()
+    return Client(s["account_sid"], s["auth_token"]), s
