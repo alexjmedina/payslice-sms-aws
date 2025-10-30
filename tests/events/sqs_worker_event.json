@@ -1,0 +1,20 @@
+{
+  "Records": [
+    {
+      "messageId": "f3e8b2d0-1111-2222-3333-444455556666",
+      "receiptHandle": "AQEB...",
+      "body": "{\"event_id\":\"e-456\",\"phone\":\"+15555550123\",\"amount\":185.0}",
+      "attributes": {
+        "ApproximateReceiveCount": "1",
+        "SentTimestamp": "1730220000000",
+        "SenderId": "AIDA....",
+        "ApproximateFirstReceiveTimestamp": "1730220060000"
+      },
+      "messageAttributes": {},
+      "md5OfBody": "abc123",
+      "eventSource": "aws:sqs",
+      "eventSourceARN": "arn:aws:sqs:us-east-1:471448382674:payslice-approved-queue",
+      "awsRegion": "us-east-1"
+    }
+  ]
+}
