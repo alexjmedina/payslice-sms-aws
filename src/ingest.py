@@ -1,37 +1,60 @@
-import json, os, boto3
-from utils.twilio_client import get_twilio_client
+import json, os
 from utils.logger import log
-from utils.secrets import get_secrets
+from utils.twilio_client import build_client
+from utils.secrets import get_twilio_secrets
+from utils.idempotency import was_processed
+import boto3
 
 sqs = boto3.client("sqs")
-def lambda_handler(event, context):
-    secrets = get_secrets()
-    auth = (event.get("headers") or {}).get("authorization", "")
-    if auth != f"Bearer {secrets['INTERNAL_BEARER_TOKEN']}":
-        return {"statusCode": 403, "body": "Forbidden"}
+QUEUE_URL = os.getenv("APPROVED_QUEUE_URL")
+DELAY_SECONDS = int(os.getenv("APPROVED_DELAY_SECONDS", "120"))
+
+client, conf = build_client()
+SECRETS = get_twilio_secrets()
+
+def _auth_ok(headers):
+    auth = headers.get("authorization") or headers.get("Authorization")
+    return (auth or "").split("Bearer ")[-1].strip() == SECRETS["bearer"]
+
+def _send_now(to:str, body:str):
+    return client.messages.create(
+        to=to,
+        messaging_service_sid=conf["msid"],
+        body=body
+    )
+
+def lambda_handler(event, _ctx):
+    if not _auth_ok(event.get("headers", {})):
+        return {"statusCode": 401, "body": "unauthorized"}
 
     body = json.loads(event.get("body") or "{}")
-    evt = body.get("event")
-    phone = body.get("phone")
-    amount = body.get("amount", "")
-    if not evt or not phone:
-        return {"statusCode": 400, "body": "Missing fields"}
+    eid  = body.get("event_id")
+    kind = body.get("event")
+    phone = (body.get("user") or {}).get("phone")
 
-    client, cfg = get_twilio_client()
+    if not eid or not kind or not phone:
+        return {"statusCode": 400, "body": "missing required fields"}
 
-    if evt == "advance_in_transit":
-        msg = client.messages.create(
-            to=phone,
-            messaging_service_sid=cfg["TWILIO_MSID"],
-            body="Ta-dah! Your advance is being sent! 💸 – Payslice"
+    # idempotency guard (optional)
+    if was_processed(eid):
+        return {"statusCode": 200, "body": "duplicate_ignored"}
+
+    if kind == "advance_in_transit":
+        res = _send_now(phone, "Ta-dah! Your advance is being sent! – PaySlice")
+        log("sms.sent", type=kind, sid=res.sid, to=phone)
+        return {"statusCode": 200, "body": json.dumps({"sid": res.sid})}
+
+    if kind == "advance_approved":
+        amount = body.get("amount")
+        if amount is None:
+            return {"statusCode": 400, "body": "amount required for advance_approved"}
+
+        sqs.send_message(
+            QueueUrl=QUEUE_URL,
+            MessageBody=json.dumps({"event_id": eid, "phone": phone, "amount": amount}),
+            DelaySeconds=DELAY_SECONDS
         )
-        log("sent_in_transit", phone=phone, sid=msg.sid)
-        return {"statusCode": 200, "body": json.dumps({"sid": msg.sid})}
+        log("queue.enqueued", type=kind, phone=phone, delay=DELAY_SECONDS)
+        return {"statusCode": 202, "body": "queued"}
 
-    if evt == "advance_approved":
-        queue_url = os.environ["APPROVED_QUEUE_URL"]
-        sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps({"phone": phone, "amount": amount}))
-        log("queued_approved", phone=phone)
-        return {"statusCode": 202, "body": json.dumps({"scheduled": 120})}
-
-    return {"statusCode": 400, "body": "Unknown event"}
+    return {"statusCode": 400, "body": "unsupported event"}
