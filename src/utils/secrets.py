@@ -11,31 +11,27 @@ _sm = boto3.client("secretsmanager")
 def _clean(s: str) -> str:
     """
     Normalize SecretString so it's valid JSON:
-    - strip whitespace
-    - remove BOM variants (UTF-8 ï»¿ or \ufeff)
-    - drop any junk before the first '{'
+    - strip whitespace/newlines
+    - remove BOM sequences ('\ufeff' and UTF-8 equivalent ï»¿)
+    - ensure the string starts with '{'
     """
     if not isinstance(s, str):
         return s
 
-    # Trim outer whitespace/newlines first
     s = s.strip()
 
-    # Case 1: normal BOM codepoint
-    if s.startswith("\ufeff"):
-        s = s.lstrip("\ufeff").strip()
+    # Remove UTF-8 BOM (ï»¿) or Unicode BOM (\ufeff)
+    for bom in ["\ufeff", "\u00ef\u00bb\u00bf", "ï»¿"]:
+        if s.startswith(bom):
+            s = s[len(bom):].strip()
 
-    # Case 2: BOM got stored as literal UTF-8 bytes: \u00ef\u00bb\u00bf  (ï»¿)
-    # Powertools showed exactly this in the logs.
-    if s.startswith("\u00ef\u00bb\u00bf"):
-        s = s[len("\u00ef\u00bb\u00bf"):].strip()
-
-    # Final safety net: find the first '{' and drop anything before it
-    brace_idx = s.find("{")
-    if brace_idx > 0:
-        s = s[brace_idx:]
+    # Hard fallback: chop off anything before the first '{'
+    brace = s.find("{")
+    if brace > 0:
+        s = s[brace:]
 
     return s
+
 
 
 
