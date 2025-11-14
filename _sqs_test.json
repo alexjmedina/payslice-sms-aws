@@ -1,1 +1,6 @@
-﻿{"event_id":"evt-test-003","user":{"phone":"+13053061525"},"event":"advance_in_transit"}
+{
+  "event_id": "evt-test-006",
+  "event": "advance_approved",
+  "amount": 50.00,
+  "phone": "+13053061525"
+}
