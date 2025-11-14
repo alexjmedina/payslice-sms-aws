@@ -9,8 +9,34 @@ _sm = boto3.client("secretsmanager")
 
 
 def _clean(s: str) -> str:
-    # remove UTF-8 BOM + trim whitespace/newlines
-    return s.lstrip("\ufeff").strip()
+    """
+    Normalize SecretString so it's valid JSON:
+    - strip whitespace
+    - remove BOM variants (UTF-8 ï»¿ or \ufeff)
+    - drop any junk before the first '{'
+    """
+    if not isinstance(s, str):
+        return s
+
+    # Trim outer whitespace/newlines first
+    s = s.strip()
+
+    # Case 1: normal BOM codepoint
+    if s.startswith("\ufeff"):
+        s = s.lstrip("\ufeff").strip()
+
+    # Case 2: BOM got stored as literal UTF-8 bytes: \u00ef\u00bb\u00bf  (ï»¿)
+    # Powertools showed exactly this in the logs.
+    if s.startswith("\u00ef\u00bb\u00bf"):
+        s = s[len("\u00ef\u00bb\u00bf"):].strip()
+
+    # Final safety net: find the first '{' and drop anything before it
+    brace_idx = s.find("{")
+    if brace_idx > 0:
+        s = s[brace_idx:]
+
+    return s
+
 
 
 def get_twilio_secrets() -> dict:
