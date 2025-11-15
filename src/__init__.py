@@ -18,7 +18,7 @@ Environment variables expected:
   • TWILIO_SECRET_NAME         - Name of AWS Secrets Manager secret
   • APPROVED_QUEUE_URL         - URL of SQS queue for delayed messages
   • APPROVED_DELAY_SECONDS     - Default delay for “Approved” notifications
-  • IDEMPOTENCY_TABLE          - DynamoDB table for duplicate-event prevention (optional)
+  • IDEMPOTENCY_TABLE          - DynamoDB table for duplicate-event prevention
   • LOG_LEVEL                  - Log verbosity (default: INFO)
 
 All handlers in this package are stateless and Lambda-optimized.

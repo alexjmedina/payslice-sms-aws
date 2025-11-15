@@ -2,6 +2,27 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.pyo
+
+# SAM / build artifacts
+.aws-sam/
+.sam-cache/
+.aws-sam-cache/
+sam-installation/
+
+# AWS CLI installers / archives
+awscliv2.zip
+
+# Local test & secret artifacts
+_secret*.json
+_twilio_clean.json
+_sqs_test.json
+local_twilio_status_event.json
+
+# Editor junk
+.vscode/
+.idea/
+.DS_Store
 
 # C extensions
 *.so
