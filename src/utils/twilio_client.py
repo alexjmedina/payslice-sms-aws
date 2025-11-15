@@ -1,6 +1,12 @@
-from twilio.rest import Client
-from .secrets import get_twilio_secrets
+from twilio.rest import Client as TwilioClient
+
+from utils.secrets import get_twilio_secrets
+
 
 def build_client():
-    s = get_twilio_secrets()
-    return Client(s["account_sid"], s["auth_token"]), s
+    secrets = get_twilio_secrets()
+    client = TwilioClient(secrets.account_sid, secrets.auth_token)
+    conf = {
+        "messaging_service_sid": secrets.msid,
+    }
+    return client, conf

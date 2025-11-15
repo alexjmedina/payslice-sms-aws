@@ -1,7 +1,12 @@
-import json, os
+from utils.logger import get_logger
 
-def lambda_handler(event, _ctx):
-    path = event.get("rawPath", "/")
-    if path.endswith("/version"):
-        return {"statusCode":200,"body":json.dumps({"version": os.getenv("APP_VERSION","v1")})}
-    return {"statusCode":200,"body":"ok"}
+log = get_logger("health")
+
+
+def lambda_handler(event, context):
+    log("health.check", path="/health", method=event.get("requestContext", {}).get("http", {}).get("method", "GET"))
+    return {
+        "statusCode": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": '{"status":"ok"}',
+    }

@@ -1,60 +1,61 @@
-import json, os
-from utils.logger import log
-from utils.twilio_client import build_client
-from utils.secrets import get_twilio_secrets
-from utils.idempotency import was_processed
+import json
+import os
+
 import boto3
 
+from utils.logger import get_logger
+from utils.twilio_client import build_client
+
+log = get_logger("ingest")
+
 sqs = boto3.client("sqs")
-QUEUE_URL = os.getenv("APPROVED_QUEUE_URL")
-DELAY_SECONDS = int(os.getenv("APPROVED_DELAY_SECONDS", "120"))
+APPROVED_QUEUE_URL = os.environ["APPROVED_QUEUE_URL"]
 
-client, conf = build_client()
-SECRETS = get_twilio_secrets()
+twilio_client, twilio_conf = build_client()
 
-def _auth_ok(headers):
-    auth = headers.get("authorization") or headers.get("Authorization")
-    return (auth or "").split("Bearer ")[-1].strip() == SECRETS["bearer"]
 
-def _send_now(to:str, body:str):
-    return client.messages.create(
-        to=to,
-        messaging_service_sid=conf["msid"],
-        body=body
+def lambda_handler(event, context):
+    raw_body = event.get("body") or "{}"
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        log("ingest.invalid_json", body_preview=raw_body[:200])
+        return {"statusCode": 400, "body": '{"error":"invalid_json"}'}
+
+    # Expect something like:
+    # { "event": "advance_approved", "event_id": "...", "user": { "phone": ... }, "amount": 100.0, "send_in_transit_now": true }
+    evt = payload.get("event")
+    send_in_transit_now = bool(payload.get("send_in_transit_now"))
+
+    # 1) Optional: send instant “in transit” SMS
+    if send_in_transit_now:
+        try:
+            phone = payload["user"]["phone"]
+            amount = payload["amount"]
+            body = f"🎉 Your ${amount:.2f} advance is on its way! We’ve sent it to your bank. – PaySlice"
+            resp = twilio_client.messages.create(
+                messaging_service_sid=twilio_conf["messaging_service_sid"],
+                to=phone,
+                body=body,
+            )
+            log("ingest.twilio_in_transit_sent", sid=resp.sid, to=phone)
+        except Exception as e:
+            log("ingest.twilio_in_transit_error", error=str(e), payload=payload)
+            # You can decide whether to still enqueue the delayed event or not.
+
+    # 2) Always enqueue approved event for Worker
+    msg_for_worker = {
+        "event_id": payload.get("event_id"),
+        "event": "advance_approved",
+        "user": {"phone": payload["user"]["phone"]},
+        "amount": payload["amount"],
+    }
+
+    resp = sqs.send_message(
+        QueueUrl=APPROVED_QUEUE_URL,
+        MessageBody=json.dumps(msg_for_worker),
+        DelaySeconds=120,
     )
+    log("ingest.enqueued", queue_url=APPROVED_QUEUE_URL, message_id=resp["MessageId"])
 
-def lambda_handler(event, _ctx):
-    if not _auth_ok(event.get("headers", {})):
-        return {"statusCode": 401, "body": "unauthorized"}
-
-    body = json.loads(event.get("body") or "{}")
-    eid  = body.get("event_id")
-    kind = body.get("event")
-    phone = (body.get("user") or {}).get("phone")
-
-    if not eid or not kind or not phone:
-        return {"statusCode": 400, "body": "missing required fields"}
-
-    # idempotency guard (optional)
-    if was_processed(eid):
-        return {"statusCode": 200, "body": "duplicate_ignored"}
-
-    if kind == "advance_in_transit":
-        res = _send_now(phone, "Ta-dah! Your advance is being sent! – PaySlice")
-        log("sms.sent", type=kind, sid=res.sid, to=phone)
-        return {"statusCode": 200, "body": json.dumps({"sid": res.sid})}
-
-    if kind == "advance_approved":
-        amount = body.get("amount")
-        if amount is None:
-            return {"statusCode": 400, "body": "amount required for advance_approved"}
-
-        sqs.send_message(
-            QueueUrl=QUEUE_URL,
-            MessageBody=json.dumps({"event_id": eid, "phone": phone, "amount": amount}),
-            DelaySeconds=DELAY_SECONDS
-        )
-        log("queue.enqueued", type=kind, phone=phone, delay=DELAY_SECONDS)
-        return {"statusCode": 202, "body": "queued"}
-
-    return {"statusCode": 400, "body": "unsupported event"}
+    return {"statusCode": 202, "body": '{"queued":true}'}

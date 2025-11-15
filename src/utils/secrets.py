@@ -1,85 +1,52 @@
-import os
 import json
+import os
+from dataclasses import dataclass
+
 import boto3
-from aws_lambda_powertools import Logger
+from botocore.exceptions import ClientError
 
-logger = Logger(service="twilio-secrets")
+from utils.logger import get_logger
 
-_sm = boto3.client("secretsmanager")
-
-
-def _clean(s: str) -> str:
-    """
-    Normalize SecretString so it's valid JSON:
-    - strip whitespace/newlines
-    - remove BOM sequences ('\ufeff' and UTF-8 equivalent ï»¿)
-    - ensure the string starts with '{'
-    """
-    if not isinstance(s, str):
-        return s
-
-    s = s.strip()
-
-    # Remove UTF-8 BOM (ï»¿) or Unicode BOM (\ufeff)
-    for bom in ["\ufeff", "\u00ef\u00bb\u00bf", "ï»¿"]:
-        if s.startswith(bom):
-            s = s[len(bom):].strip()
-
-    # Hard fallback: chop off anything before the first '{'
-    brace = s.find("{")
-    if brace > 0:
-        s = s[brace:]
-
-    return s
+log = get_logger("twilio-secrets")
 
 
+@dataclass(frozen=True)
+class TwilioSecrets:
+    account_sid: str
+    auth_token: str
+    msid: str
+    bearer: str
 
 
-def get_twilio_secrets() -> dict:
-    """
-    Load and parse the Twilio secrets JSON from AWS Secrets Manager.
-    Fails loudly (with clear logs) if anything is wrong.
-    """
-    name = os.getenv("TWILIO_SECRET_NAME")
-    if not name:
-        # Fatal misconfiguration – no env var
-        logger.error("TWILIO_SECRET_NAME env var is missing")
-        raise RuntimeError("TWILIO_SECRET_NAME env var is not set")
+def get_twilio_secrets() -> TwilioSecrets:
+    secret_name = os.environ.get("TWILIO_SECRET_NAME", "payslice/twilio/txn")
+    region_name = os.environ.get("AWS_REGION", "us-east-1")
 
-    logger.info(f"Fetching Twilio secrets from Secrets Manager: {name}")
+    log("twilio.secrets.fetch", secret_name=secret_name, region=region_name)
 
-    resp = _sm.get_secret_value(SecretId=name)
-
-    raw = resp.get("SecretString", "")
-    logger.info(f"Raw SecretString length before cleaning: {len(raw)}")
-
-    cleaned = _clean(raw)
-    logger.info(f"SecretString length after cleaning: {len(cleaned)}")
-
-    if not cleaned:
-        # This is the situation we’re seeing right now
-        logger.error(
-            f"Secret {name!r} is empty after cleaning. "
-            "Check its value in AWS Secrets Manager (SecretString)."
-        )
-        raise RuntimeError(
-            f"Secret {name!r} is empty or missing SecretString; "
-            "cannot initialize Twilio client."
-        )
+    client = boto3.client("secretsmanager", region_name=region_name)
 
     try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.exception(
-            f"Failed to parse Twilio secret JSON for {name!r}: {e}. "
-            f"First 100 chars: {cleaned[:100]!r}"
-        )
+        resp = client.get_secret_value(SecretId=secret_name)
+    except ClientError as e:
+        log("twilio.secrets.error", error=str(e))
         raise
 
-    # Optional: sanity-check keys
-    for key in ("account_sid", "auth_token", "msid"):
-        if key not in data:
-            logger.warning(f"Twilio secret is missing key {key!r}")
+    raw = resp.get("SecretString") or ""
+    # Keep a minimal guard for BOM just in case:
+    cleaned = raw.lstrip("\ufeff").strip()
 
-    logger.info("Twilio secrets loaded successfully")
-    return data
+    data = json.loads(cleaned)
+
+    for field in ("account_sid", "auth_token", "msid", "bearer"):
+        if field not in data:
+            raise ValueError(f"Missing '{field}' in Twilio secret '{secret_name}'")
+
+    log("twilio.secrets.loaded")
+
+    return TwilioSecrets(
+        account_sid=data["account_sid"],
+        auth_token=data["auth_token"],
+        msid=data["msid"],
+        bearer=data["bearer"],
+    )

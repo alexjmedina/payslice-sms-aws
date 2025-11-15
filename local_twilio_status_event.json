@@ -1,9 +1,0 @@
-{
-  "version": "2.0",
-  "routeKey": "POST /twilio/status",
-  "rawPath": "/twilio/status",
-  "headers": {
-    "content-type": "application/x-www-form-urlencoded"
-  },
-  "body": "MessageSid=SMXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX&MessageStatus=delivered&To=%2B13053061525&From=%2B18886456642"
-}
