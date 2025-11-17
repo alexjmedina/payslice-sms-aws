@@ -147,8 +147,4 @@ sam deploy --guided
 
 ---
 
-This README documents the expected event contract and operational details required to integrate the PaySlice Vercel app with this microservice. If you want, I can also:
-
-- add a `CONTRIBUTING.md` file,
-- add a sample `env` file and small Makefile for local runs,
-- or add unit tests that assert the event contract.
+This README documents the expected event contract and operational details required to integrate the PaySlice Vercel app with this microservice.

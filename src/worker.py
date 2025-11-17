@@ -16,7 +16,7 @@ EVENT_TEMPLATES = {
     ),
     "advance_approved": lambda msg: (
         f"🎉 Your ${msg['amount']:.2f} advance has been approved. "
-        "Funds are now moving to your bank. You’ll get another text once it lands. – PaySlice."
+        "Funds are now moving to your bank. – PaySlice."
     ),
 }
 
