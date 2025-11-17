@@ -9,7 +9,7 @@ logger = get_logger("worker")
 # Twilio client + config (from Secrets Manager)
 client, conf = build_client()
 
-
+# Supported SMS templates by event type
 EVENT_TEMPLATES = {
     "advance_in_transit": lambda msg: (
         f"Ta-dah! Your advance of ${msg['amount']:.2f} is being sent!. 💸 – PaySlice"
@@ -22,6 +22,9 @@ EVENT_TEMPLATES = {
 
 
 def build_body(msg: Dict[str, Any]) -> str:
+    """
+    Build the SMS body based on the event type and payload.
+    """
     event = msg.get("event")
     if event not in EVENT_TEMPLATES:
         raise ValueError(f"Unsupported event type: {event}")
@@ -40,7 +43,7 @@ def lambda_handler(event, context):
         raw_body = rec.get("body") or ""
         receipt_handle = rec.get("receiptHandle", "<no-handle>")
 
-        # 1) Parse JSON
+        # 1) Parse JSON from SQS
         try:
             msg = json.loads(raw_body)
         except json.JSONDecodeError:
@@ -77,13 +80,14 @@ def lambda_handler(event, context):
         # 4) Send via Twilio
         try:
             resp = client.messages.create(
-                msid=conf["msid"],
+                # IMPORTANT: Twilio expects "messaging_service_sid", not "msid"
+                messaging_service_sid=conf["messaging_service_sid"],
                 to=phone,
                 body=body,
             )
             logger.info(
                 "worker.twilio_sent: sid=%s to=%s event=%s event_id=%s",
-                resp.sid,
+                getattr(resp, "sid", "<no-sid>"),
                 phone,
                 msg.get("event"),
                 msg.get("event_id"),
