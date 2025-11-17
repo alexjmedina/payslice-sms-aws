@@ -1,87 +1,109 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: PaySlice Transactional SMS Microservice (AWS-native SAM + Twilio)
-
-Globals:
-  Function:
-    Runtime: python3.12
-    Timeout: 30
-    MemorySize: 256
-    Architectures:
-      - x86_64
-    Environment:
-      Variables:
-        LOG_LEVEL: INFO
-        TWILIO_SECRET_NAME: !Ref TwilioSecretName
-    Tracing: Active
+Description: >
+  PaySlice Twilio SMS microservice
+  (API Gateway HttpApi + Lambda + SQS + Twilio + status callbacks)
 
 Parameters:
   StageName:
     Type: String
     Default: staging
-    Description: Deployment stage (staging/prod)
-  TwilioSecretName:
-    Type: String
-    Default: payslice/twilio/txn
-    Description: Name of AWS Secrets Manager secret storing Twilio credentials
+    Description: Deployment stage name (e.g. staging, prod)
+
   ApprovedDelaySeconds:
     Type: Number
     Default: 120
-    Description: Delay (in seconds) for “Approved” SMS messages
+    Description: Delay in seconds before sending "advance_approved" messages
+
+  TwilioSecretName:
+    Type: String
+    Default: payslice/twilio/txn
+    Description: Name of the AWS Secrets Manager secret containing Twilio credentials
+
   IdempotencyTableName:
     Type: String
     Default: payslice-sms-idempotency
-    Description: DynamoDB table name for idempotency (optional)
+    Description: DynamoDB table name for idempotency storage
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 10
+    MemorySize: 256
+    Tracing: Active
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+        POWERTOOLS_SERVICE_NAME: payslice-sms
+        POWERTOOLS_METRICS_NAMESPACE: PaySliceSms
+        TWILIO_SECRET_NAME: !Ref TwilioSecretName
 
 Resources:
-
-  ### API Gateway
+  ###########################################################
+  # HTTP API
+  ###########################################################
   HttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: !Ref StageName
       CorsConfiguration:
-        AllowMethods: [GET, POST, OPTIONS]
-        AllowHeaders: [Content-Type, Authorization]
-        AllowOrigins: ['*']
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - '*'
 
-  ### SQS Queue for delayed “Approved” messages
-  ApprovedQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      VisibilityTimeout: 300
-      DelaySeconds: !Ref ApprovedDelaySeconds
-      MessageRetentionPeriod: 86400
-
-  ### Dead-letter queue for failures
+  ###########################################################
+  # SQS Queues (Approved + DLQ)
+  ###########################################################
   DLQ:
     Type: AWS::SQS::Queue
     Properties:
+      QueueName: !Sub "payslice-sms-dlq-${StageName}"
       MessageRetentionPeriod: 1209600 # 14 days
 
-  ### Idempotency Table (optional)
+  ApprovedQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "payslice-sms-approved-${StageName}"
+      VisibilityTimeout: 300
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DLQ.Arn
+        maxReceiveCount: 3
+
+  ###########################################################
+  # DynamoDB Idempotency Table
+  ###########################################################
   IdempotencyTable:
     Type: AWS::DynamoDB::Table
     Properties:
       TableName: !Ref IdempotencyTableName
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: pk
+        - AttributeName: id
           AttributeType: S
       KeySchema:
-        - AttributeName: pk
+        - AttributeName: id
           KeyType: HASH
       TimeToLiveSpecification:
-        AttributeName: exp
+        AttributeName: expires_at
         Enabled: true
 
-  ### Lambda - /sms endpoint
+  ###########################################################
+  # Lambda - /sms endpoint (Ingest)
+  ###########################################################
   IngestFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: payslice-sms-ingest
       CodeUri: src/
       Handler: ingest.lambda_handler
+      Runtime: python3.12
+      Timeout: 10
+      MemorySize: 256
       Environment:
         Variables:
           APPROVED_QUEUE_URL: !Ref ApprovedQueue
@@ -89,16 +111,17 @@ Resources:
           IDEMPOTENCY_TABLE: !Ref IdempotencyTableName
       Policies:
         - AWSLambdaBasicExecutionRole
+        # Allow Secrets Manager access for Twilio credentials
         - Statement:
             - Effect: Allow
               Action: secretsmanager:GetSecretValue
               Resource: "*"
-            - Effect: Allow
-              Action: sqs:SendMessage
-              Resource: !GetAtt ApprovedQueue.Arn
-            - Effect: Allow
-              Action: dynamodb:PutItem
-              Resource: !GetAtt IdempotencyTable.Arn
+        # Allow sending messages to the ApprovedQueue
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ApprovedQueue.QueueName
+        # Allow writing idempotency records
+        - DynamoDBCrudPolicy:
+            TableName: !Ref IdempotencyTableName
       Events:
         IngestApi:
           Type: HttpApi
@@ -107,41 +130,51 @@ Resources:
             Path: /sms
             Method: POST
 
-  ### Lambda - Worker for delayed “Approved” messages
+  ###########################################################
+  # Lambda - SQS Worker (Delayed "advance_approved" sender)
+  ###########################################################
   WorkerFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: payslice-sms-worker
       CodeUri: src/
       Handler: worker.lambda_handler
+      Runtime: python3.12
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          # TWILIO_SECRET_NAME is inherited from Globals
+          LOG_LEVEL: INFO
       Policies:
         - AWSLambdaBasicExecutionRole
+        # Poll from ApprovedQueue
+        - SQSPollerPolicy:
+            QueueName: !GetAtt ApprovedQueue.QueueName
+        # Allow reading Twilio secrets
         - Statement:
             - Effect: Allow
-              Action:
-                - secretsmanager:GetSecretValue
+              Action: secretsmanager:GetSecretValue
               Resource: "*"
-            - Effect: Allow
-              Action:
-                - sqs:ReceiveMessage
-                - sqs:DeleteMessage
-                - sqs:GetQueueAttributes
-              Resource: !GetAtt ApprovedQueue.Arn
       Events:
-        SQSTrigger:
+        ApprovedQueueEvent:
           Type: SQS
           Properties:
             Queue: !GetAtt ApprovedQueue.Arn
             BatchSize: 10
-            Enabled: true
 
-  ### Lambda - /twilio/status webhook
+  ###########################################################
+  # Lambda - Twilio Status Webhook (/status)
+  ###########################################################
   StatusFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: payslice-sms-status
       CodeUri: src/
       Handler: status.lambda_handler
+      Runtime: python3.12
+      Timeout: 5
+      MemorySize: 128
       Policies:
         - AWSLambdaBasicExecutionRole
       Events:
@@ -149,39 +182,44 @@ Resources:
           Type: HttpApi
           Properties:
             ApiId: !Ref HttpApi
-            Path: /twilio/status
+            Path: /status
             Method: POST
 
-  ### Lambda - /healthz and /version endpoints
+  ###########################################################
+  # Lambda - Health Check (/health)
+  ###########################################################
   HealthFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: payslice-sms-health
       CodeUri: src/
       Handler: health.lambda_handler
+      Runtime: python3.12
+      Timeout: 5
+      MemorySize: 128
       Policies:
         - AWSLambdaBasicExecutionRole
       Events:
-        HealthCheck:
+        HealthApi:
           Type: HttpApi
           Properties:
             ApiId: !Ref HttpApi
-            Path: /healthz
-            Method: GET
-        VersionCheck:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref HttpApi
-            Path: /version
+            Path: /health
             Method: GET
 
 Outputs:
   ApiBaseUrl:
-    Description: HTTPS base URL for PaySlice SMS API
-    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/"
-  QueueUrl:
-    Description: URL of the ApprovedQueue
+    Description: Base URL for the HttpApi stage
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
+
+  ApprovedQueueUrl:
+    Description: URL of the Approved SQS queue
     Value: !Ref ApprovedQueue
-  IdempotencyTable:
-    Description: DynamoDB table for idempotency (optional)
+
+  DLQUrl:
+    Description: URL of the dead-letter queue
+    Value: !Ref DLQ
+
+  IdempotencyTableOut:
+    Description: Idempotency DynamoDB table name
     Value: !Ref IdempotencyTableName

@@ -4,8 +4,9 @@ from typing import Any, Dict
 from utils.logger import get_logger
 from utils.twilio_client import build_client
 
-log = get_logger("worker")
+logger = get_logger("worker")
 
+# Twilio client + config (from Secrets Manager)
 client, conf = build_client()
 
 
@@ -15,7 +16,7 @@ EVENT_TEMPLATES = {
     ),
     "advance_approved": lambda msg: (
         f"🎉 Your ${msg['amount']:.2f} advance has been approved. "
-        "Funds are now moving to your bank. You’ll get another text once it lands. – Payslice."
+        "Funds are now moving to your bank. You’ll get another text once it lands. – PaySlice."
     ),
 }
 
@@ -33,56 +34,66 @@ def build_body(msg: Dict[str, Any]) -> str:
 
 def lambda_handler(event, context):
     records = event.get("Records", [])
+    logger.info("worker.lambda_start: received %d records", len(records))
+
     for rec in records:
         raw_body = rec.get("body") or ""
         receipt_handle = rec.get("receiptHandle", "<no-handle>")
 
+        # 1) Parse JSON
         try:
             msg = json.loads(raw_body)
         except json.JSONDecodeError:
-            log(
-                "worker.payload_invalid_json",
-                body_preview=raw_body[:200],
-                receipt_handle=receipt_handle,
+            logger.warning(
+                "worker.payload_invalid_json: preview=%s receipt_handle=%s",
+                raw_body[:200],
+                receipt_handle,
             )
             # Let SQS redrive to DLQ after maxReceiveCount
             continue
 
+        # 2) Extract phone
         try:
             phone = msg["user"]["phone"]
         except KeyError:
-            log(
-                "worker.missing_phone",
-                msg=msg,
-                receipt_handle=receipt_handle,
+            logger.warning(
+                "worker.missing_phone: msg=%s receipt_handle=%s",
+                msg,
+                receipt_handle,
             )
             continue
 
+        # 3) Build SMS body
         try:
             body = build_body(msg)
         except Exception as e:
-            log("worker.build_body_error", error=str(e), msg=msg)
+            logger.error(
+                "worker.build_body_error: error=%s msg=%s",
+                str(e),
+                msg,
+            )
             continue
 
+        # 4) Send via Twilio
         try:
             resp = client.messages.create(
-                messaging_service_sid=conf["messaging_service_sid"],
+                msid=conf["msid"],
                 to=phone,
                 body=body,
             )
-            log(
-                "worker.twilio_sent",
-                sid=resp.sid,
-                to=phone,
-                event=msg.get("event"),
-                event_id=msg.get("event_id"),
+            logger.info(
+                "worker.twilio_sent: sid=%s to=%s event=%s event_id=%s",
+                resp.sid,
+                phone,
+                msg.get("event"),
+                msg.get("event_id"),
             )
         except Exception as e:
-            log(
-                "worker.twilio_error",
-                error=str(e),
-                to=phone,
-                event=msg.get("event"),
+            logger.error(
+                "worker.twilio_error: error=%s to=%s event=%s",
+                str(e),
+                phone,
+                msg.get("event"),
             )
-            # Again: let SQS retry and eventually DLQ
+            # Let SQS retry and eventually DLQ
             continue

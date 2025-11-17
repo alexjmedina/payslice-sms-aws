@@ -1,0 +1,8 @@
+{
+  "event_id": "evt-test-001",
+  "event": "advance_in_transit",
+  "user": {
+    "phone": "+13053061525"
+  },
+  "amount": 250.0
+}

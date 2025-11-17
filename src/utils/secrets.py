@@ -1,52 +1,81 @@
-import json
 import os
-from dataclasses import dataclass
+import json
 
 import boto3
-from botocore.exceptions import ClientError
 
 from utils.logger import get_logger
 
-log = get_logger("twilio-secrets")
+logger = get_logger("secrets")
 
 
-@dataclass(frozen=True)
-class TwilioSecrets:
-    account_sid: str
-    auth_token: str
-    msid: str
-    bearer: str
+def _get_secret_name_and_region() -> tuple[str, str]:
+    """
+    Resolve the Twilio secret name and AWS region from environment variables.
+
+    TWILIO_SECRET_NAME is required (you pass it via the TwilioSecretName parameter).
+    AWS_REGION is optional; defaults to us-east-1 inside Lambda if not set.
+    """
+    secret_name = os.getenv("TWILIO_SECRET_NAME")
+    region_name = os.getenv("AWS_REGION", "us-east-1")
+
+    missing = []
+    if not secret_name:
+        missing.append("TWILIO_SECRET_NAME")
+
+    if missing:
+        msg = f"Missing required environment variables: {', '.join(missing)}"
+        logger.error(msg)
+        raise RuntimeError(msg)
+
+    return secret_name, region_name
 
 
-def get_twilio_secrets() -> TwilioSecrets:
-    secret_name = os.environ.get("TWILIO_SECRET_NAME", "payslice/twilio/txn")
-    region_name = os.environ.get("AWS_REGION", "us-east-1")
+def get_twilio_secrets() -> dict:
+    """
+    Fetch Twilio credentials/config from AWS Secrets Manager.
 
-    log("twilio.secrets.fetch", secret_name=secret_name, region=region_name)
+    Expects the secret value to be a JSON object, e.g.:
 
+        {
+          "account_sid": "...",
+          "auth_token": "...",
+          "msid": "..."
+        }
+    """
+    secret_name, region_name = _get_secret_name_and_region()
+
+    # Log using the Logger API, not as a callable
+    logger.info(
+        "Fetching Twilio secrets from Secrets Manager",
+        extra={"secret_name": secret_name, "region": region_name},
+    )
+
+    # Ensure client is created for the correct region
     client = boto3.client("secretsmanager", region_name=region_name)
 
+    resp = client.get_secret_value(SecretId=secret_name)
+    secret_str = resp.get("SecretString")
+
+    if not secret_str:
+        msg = f"Secret '{secret_name}' has no SecretString payload"
+        logger.error(msg)
+        raise RuntimeError(msg)
+
     try:
-        resp = client.get_secret_value(SecretId=secret_name)
-    except ClientError as e:
-        log("twilio.secrets.error", error=str(e))
+        data = json.loads(secret_str)
+    except json.JSONDecodeError as e:
+        logger.error(
+            "SecretString is not valid JSON",
+            extra={"secret_name": secret_name, "error": str(e)},
+        )
         raise
 
-    raw = resp.get("SecretString") or ""
-    # Keep a minimal guard for BOM just in case:
-    cleaned = raw.lstrip("\ufeff").strip()
+    # Optional: minimal validation
+    # for field in ("account_sid", "auth_token", "msid"):
+    #     if field not in data:
+    #         logger.warning(
+    #             "Twilio secret missing expected field",
+    #             extra={"secret_name": secret_name, "field": field},
+    #         )
 
-    data = json.loads(cleaned)
-
-    for field in ("account_sid", "auth_token", "msid", "bearer"):
-        if field not in data:
-            raise ValueError(f"Missing '{field}' in Twilio secret '{secret_name}'")
-
-    log("twilio.secrets.loaded")
-
-    return TwilioSecrets(
-        account_sid=data["account_sid"],
-        auth_token=data["auth_token"],
-        msid=data["msid"],
-        bearer=data["bearer"],
-    )
+    return data
